@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard de Partidos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body { 
+            background-color: #f0f2f5; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        .navbar {
+            background-color: #ffffff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .container { 
+            margin-top: 30px; 
+        }
+        .card {
+            border: none;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        .table-hover tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        .table thead th {
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #dee2e6;
+            font-weight: 600;
+        }
+        .team-name {
+            font-weight: 500;
+        }
+        .preview-btn {
+            cursor: pointer;
+            color: #6c757d;
+            transition: color 0.2s;
+        }
+        .preview-btn:hover {
+            color: #0d6efd;
+        }
+        .preview-container {
+            background-color: #e9ecef;
+            padding: 15px;
+            font-size: 0.9em;
+            border-top: 1px solid #ddd;
+        }
+        .preview-loading {
+            text-align: center;
+            font-style: italic;
+            color: #6c757d;
+        }
+        .ah-value { font-weight: bold; color: #6f42c1; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-expand-lg">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fa-solid fa-chart-pie"></i>
+                <strong>Analizador</strong>
+            </a>
+            <a href="/analizar" class="btn btn-primary">Analizar por ID</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card">
+            <div class="card-header">
+                <h4 class="mb-0">Partidos del Día</h4>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover table-striped text-center mb-0">
+                        <thead>
+                            <tr>
+                                <th>Hora</th>
+                                <th class="text-start">Partido</th>
+                                <th>Hándicap</th>
+                                <th>Línea Goles</th>
+                                <th>Vista Previa</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for partido in partidos %}
+                            <tr>
+                                <td class="align-middle">{{ partido.time }}</td>
+                                <td class="align-middle text-start">
+                                    <span class="team-name">{{ partido.home }}</span>
+                                    <small class="text-muted mx-1">vs</small>
+                                    <span class="team-name">{{ partido.away }}</span>
+                                </td>
+                                <td class="align-middle">
+                                    <span class="badge bg-info text-dark">{{ partido.handicap }}</span>
+                                </td>
+                                <td class="align-middle">
+                                    <span class="badge bg-success">{{ partido.goals }}</span>
+                                </td>
+                                <td class="align-middle">
+                                    <span class="preview-btn" data-match-id="{{ partido.id }}" title="Ver vista previa rápida">
+                                        <i class="fa-solid fa-eye"></i>
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr id="preview-row-{{ partido.id }}" style="display: none;">
+                                <td colspan="5" class="preview-container" id="preview-container-{{ partido.id }}">
+                                    <div class="preview-loading">Cargando...</div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Función para cargar la VISTA PREVIA RÁPIDA (bajo demanda)
+        function loadPreviewAnalysis(matchId) {
+            const previewContainer = document.getElementById(`preview-container-${matchId}`);
+            const previewRow = document.getElementById(`preview-row-${matchId}`);
+            previewRow.style.display = '';
+            previewContainer.innerHTML = '<div class="preview-loading">Cargando vista previa...</div>';
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+
+            fetch(`/api/preview/${matchId}`, { signal: controller.signal })
+                .then(response => response.json())
+                .then(data => {
+                    clearTimeout(timeoutId);
+                    if (data.error) {
+                        previewContainer.innerHTML = `<div class="preview-loading">Error: ${data.error}</div>`;
+                        return;
+                    }
+                    previewContainer.setAttribute('data-loaded', 'true');
+
+                    let html = `<h6><i class="fa-solid fa-bolt"></i> Vista Previa: ${data.home_team} vs ${data.away_team}</h6>`;
+                    html += `<p class="mb-1"><strong>Línea AH:</strong> <span class="ah-value">${data.handicap.ah_line}</span> | <strong>Favorito:</strong> ${data.handicap.favorite || 'Ninguno'}</p>`;
+                    
+                    html += '<div class="row mt-2">';
+                    html += `<div class="col-6"><strong>Rendimiento Reciente (Local):</strong><br>${data.recent_form.home.wins} victorias en ${data.recent_form.home.total} partidos.</div>`;
+                    html += `<div class="col-6"><strong>Rendimiento Reciente (Visitante):</strong><br>${data.recent_form.away.wins} victorias en ${data.recent_form.away.total} partidos.</div>`;
+                    html += '</div>';
+
+                    previewContainer.innerHTML = html;
+                })
+                .catch(error => {
+                    clearTimeout(timeoutId);
+                    if (error.name === 'AbortError') {
+                        previewContainer.innerHTML = '<div class="preview-loading">Error: Tiempo de espera agotado.</div>';
+                    } else {
+                        previewContainer.innerHTML = '<div class="preview-loading">Error al cargar la vista previa.</div>';
+                    }
+                });
+        }
+
+        // Manejar el clic en los botones de vista previa
+        document.addEventListener('click', function(e) {
+            const btn = e.target.closest('.preview-btn');
+            if (btn) {
+                const matchId = btn.getAttribute('data-match-id');
+                const previewRow = document.getElementById(`preview-row-${matchId}`);
+                const previewContainer = document.getElementById(`preview-container-${matchId}`);
+                
+                if (previewRow.style.display === '') {
+                    previewRow.style.display = 'none';
+                } else {
+                    // Si no se ha cargado, o si queremos recargar cada vez
+                    // if (previewContainer.getAttribute('data-loaded') !== 'true') {
+                        loadPreviewAnalysis(matchId);
+                    // }
+                    // previewRow.style.display = '';
+                }
+            }
+        });
+    </script>
+</body>
+</html>
