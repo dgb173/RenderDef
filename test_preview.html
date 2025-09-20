@@ -120,6 +120,11 @@
                     html += `<div class="col-6"><strong>Rendimiento Reciente (Visitante):</strong><br>${data.recent_form.away.wins} victorias en ${data.recent_form.away.total} partidos.</div>`;
                     html += '</div>';
 
+                    html += '<div class="row mt-2">';
+                    html += `<div class="col-12"><strong>H2H (Últ. 8):</strong> Local: ${data.h2h_stats.home_wins} | Visitante: ${data.h2h_stats.away_wins} | Empates: ${data.h2h_stats.draws}</div>`;
+                    html += `<div class="col-12"><strong>Cobertura AH en último H2H:</strong> <span class="${getCoverClass(data.handicap.cover_on_last_h2h)}">${data.handicap.cover_on_last_h2h}</span></div>`;
+                    html += '</div>';
+
                     previewContainer.innerHTML = html;
                 })
                 .catch(error => {

@@ -10,34 +10,19 @@ import math
 from bs4 import BeautifulSoup
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from modules.utils import parse_ah_to_number_of, format_ah_as_decimal_string_of, check_handicap_cover, check_goal_line_cover, get_match_details_from_row_of, extract_final_score_of
 
 BASE_URL_OF = "https://live18.nowgoal25.com"
-
-
-def _create_http_session(timeout: int = 15):
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36",
-        "Accept-Language": "es-ES,es;q=0.9,en-US;q=0.8",
-        "Referer": f"{BASE_URL_OF}/",
-    })
-    return session
-
-
-def _get_soup_from_url(url: str, *, session: requests.Session | None = None, timeout: int = 15):
-    session_local = session or _create_http_session(timeout)
-    response = session_local.get(url, timeout=timeout)
-    response.raise_for_status()
-    return BeautifulSoup(response.text, 'lxml')
-
+SELENIUM_TIMEOUT_SECONDS_OF = 10
 PLACEHOLDER_NODATA = "*(No disponible)*"
 
 def parse_ah_to_number_of(ah_line_str: str):
@@ -530,35 +515,31 @@ def get_rival_b_for_original_h2h_of(soup, league_id=None):
                 return key_id, rival_id_match.group(1), rival_tag.text.strip()
     return None, None, None
 
-def get_h2h_details_for_original_logic_of(key_match_id, rival_a_id, rival_b_id, rival_a_name="Rival A", rival_b_name="Rival B"):
-    if not all([key_match_id, rival_a_id, rival_b_id]):
+def get_h2h_details_for_original_logic_of(driver, key_match_id, rival_a_id, rival_b_id, rival_a_name="Rival A", rival_b_name="Rival B"):
+    if not all([driver, key_match_id, rival_a_id, rival_b_id]):
         return {"status": "error", "resultado": "N/A (Datos incompletos para H2H)"}
     url = f"{BASE_URL_OF}/match/h2h-{key_match_id}"
     try:
-        soup = _get_soup_from_url(url)
-    except requests.Timeout:
-        return {"status": "error", "resultado": "N/A (Timeout consultando H2H Col3)"}
-    except requests.RequestException as e:
-        return {"status": "error", "resultado": f"N/A (Error HTTP en H2H Col3: {type(e).__name__})"}
+        driver.get(url)
+        WebDriverWait(driver, SELENIUM_TIMEOUT_SECONDS_OF).until(EC.presence_of_element_located((By.ID, "table_v2")))
+        try:
+            select = Select(WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.ID, "hSelect_2"))))
+            select.select_by_value("8")
+            time.sleep(0.5)
+        except TimeoutException: pass
+        soup = BeautifulSoup(driver.page_source, "lxml")
     except Exception as e:
-        return {"status": "error", "resultado": f"N/A (Error inesperado en H2H Col3: {type(e).__name__})"}
-
+        return {"status": "error", "resultado": f"N/A (Error Selenium en H2H Col3: {type(e).__name__})"}
     if not (table := soup.find("table", id="table_v2")):
         return {"status": "error", "resultado": "N/A (Tabla H2H Col3 no encontrada)"}
-
     for row in table.find_all("tr", id=re.compile(r"tr2_\d+")):
         links = row.find_all("a", onclick=True)
-        if len(links) < 2:
-            continue
-        h_id_m = re.search(r"team\((\d+)\)", links[0].get("onclick", ""))
-        a_id_m = re.search(r"team\((\d+)\)", links[1].get("onclick", ""))
-        if not (h_id_m and a_id_m):
-            continue
+        if len(links) < 2: continue
+        h_id_m = re.search(r"team\((\d+)\)", links[0].get("onclick", "")); a_id_m = re.search(r"team\((\d+)\)", links[1].get("onclick", ""))
+        if not (h_id_m and a_id_m): continue
         h_id, a_id = h_id_m.group(1), a_id_m.group(1)
         if {h_id, a_id} == {str(rival_a_id), str(rival_b_id)}:
-            score_span = row.find("span", class_="fscore_2")
-            if not score_span or "-" not in score_span.text:
-                continue
+            if not (score_span := row.find("span", class_="fscore_2")) or "-" not in score_span.text: continue
             score = score_span.text.strip().split("(")[0].strip()
             g_h, g_a = score.split("-", 1)
             tds = row.find_all("td")
@@ -566,6 +547,7 @@ def get_h2h_details_for_original_logic_of(key_match_id, rival_a_id, rival_b_id, 
             if len(tds) > 11:
                 cell = tds[11]
                 handicap_raw = (cell.get("data-o") or cell.text).strip() or "N/A"
+            # Intentar extraer la fecha de la segunda columna (si existe)
             date_txt = None
             try:
                 if len(tds) > 1:
@@ -574,19 +556,12 @@ def get_h2h_details_for_original_logic_of(key_match_id, rival_a_id, rival_b_id, 
             except Exception:
                 date_txt = None
             return {
-                "status": "found",
-                "goles_home": g_h.strip(),
-                "goles_away": g_a.strip(),
-                "handicap_line_raw": handicap_raw,
-                "match_id": row.get('index'),
-                "h2h_home_team_name": links[0].text.strip(),
-                "h2h_away_team_name": links[1].text.strip(),
-                "date": date_txt or (tds[1].get_text(strip=True) if len(tds) > 1 else None),
-                "rival_a_name": rival_a_name,
-                "rival_b_name": rival_b_name
+                "status": "found", "goles_home": g_h.strip(), "goles_away": g_a.strip(),
+                "handicap_line_raw": handicap_raw, "match_id": row.get('index'),
+                "h2h_home_team_name": links[0].text.strip(), "h2h_away_team_name": links[1].text.strip(),
+                "date": date_txt
             }
-    return {"status": "error", "resultado": "N/A (Enfrentamiento no encontrado)"}
-
+    return {"status": "not_found", "resultado": f"H2H directo no encontrado para {rival_a_name} vs {rival_b_name}."}
 
 def get_team_league_info_from_script_of(soup):
     script_tag = soup.find("script", string=re.compile(r"var _matchInfo = "))
@@ -895,14 +870,36 @@ def obtener_datos_completos_partido(match_id: str):
     if not match_id or not match_id.isdigit():
         return {"error": "ID de partido inválido."}
 
+    # --- Inicialización de Selenium ---
+    options = ChromeOptions()
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36")
+    options.add_argument('--blink-settings=imagesEnabled=false')
+    driver = webdriver.Chrome(options=options)
+    
     main_page_url = f"{BASE_URL_OF}/match/h2h-{match_id}"
     datos = {"match_id": match_id}
 
     try:
-        soup_completo = _get_soup_from_url(main_page_url)
+        # --- Carga y Parseo de la Página Principal ---
+        driver.get(main_page_url)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "table_v1")))
+        for select_id in ["hSelect_1", "hSelect_2", "hSelect_3"]:
+            try:
+                Select(WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.ID, select_id)))).select_by_value("8")
+                # Usamos una espera explícita más eficiente en lugar de time.sleep
+                WebDriverWait(driver, 1).until(EC.text_to_be_present_in_element((By.ID, select_id), "8"))
+            except TimeoutException:
+                continue
+        soup_completo = BeautifulSoup(driver.page_source, "lxml")
         datos['final_score'] = extract_final_score_of(soup_completo)
 
+        # --- Extracción de Datos Primarios ---
         home_id, away_id, league_id, home_name, away_name, league_name = get_team_league_info_from_script_of(soup_completo)
+        # Fecha/hora del partido (si está en el script)
         dt_info = get_match_datetime_from_script_of(soup_completo)
         datos.update({
             "home_name": home_name,
@@ -913,7 +910,9 @@ def obtener_datos_completos_partido(match_id: str):
             "match_datetime": dt_info.get("match_datetime"),
         })
 
+        # --- Recopilación de todos los datos en paralelo (donde sea posible) ---
         with ThreadPoolExecutor(max_workers=8) as executor:
+            # Tareas síncronas (dependen del soup_completo)
             future_home_standings = executor.submit(extract_standings_data_from_h2h_page_of, soup_completo, home_name)
             future_away_standings = executor.submit(extract_standings_data_from_h2h_page_of, soup_completo, away_name)
             future_home_ou = executor.submit(extract_over_under_stats_from_div_of, soup_completo, 'home')
@@ -922,11 +921,14 @@ def obtener_datos_completos_partido(match_id: str):
             future_h2h_data = executor.submit(extract_h2h_data_of, soup_completo, home_name, away_name, None)
             future_last_home = executor.submit(extract_last_match_in_league_of, soup_completo, "table_v1", home_name, league_id, True)
             future_last_away = executor.submit(extract_last_match_in_league_of, soup_completo, "table_v2", away_name, league_id, False)
-
+            
+            # Tarea H2H Col3 (requiere una nueva llamada de Selenium)
             key_id_a, rival_a_id, rival_a_name = get_rival_a_for_original_h2h_of(soup_completo, league_id)
             _, rival_b_id, rival_b_name = get_rival_b_for_original_h2h_of(soup_completo, league_id)
-            future_h2h_col3 = executor.submit(get_h2h_details_for_original_logic_of, key_id_a, rival_a_id, rival_b_id, rival_a_name, rival_b_name)
-
+            # Usar el driver principal ya creado en lugar de crear uno nuevo
+            future_h2h_col3 = executor.submit(get_h2h_details_for_original_logic_of, driver, key_id_a, rival_a_id, rival_b_id, rival_a_name, rival_b_name)
+            
+            # Obtener resultados
             datos["home_standings"] = future_home_standings.result()
             datos["away_standings"] = future_away_standings.result()
             datos["home_ou_stats"] = future_home_ou.result()
@@ -939,15 +941,20 @@ def obtener_datos_completos_partido(match_id: str):
             last_away_match = future_last_away.result()
             details_h2h_col3 = future_h2h_col3.result()
 
+            # --- Comparativas (dependen de los resultados anteriores) ---
             comp_L_vs_UV_A = extract_comparative_match_of(soup_completo, "table_v1", home_name, (last_away_match or {}).get('home_team'), league_id, True)
             comp_V_vs_UL_H = extract_comparative_match_of(soup_completo, "table_v2", away_name, (last_home_match or {}).get('away_team'), league_id, False)
 
+            # --- Generar Análisis de Mercado ---
             datos["market_analysis_html"] = generar_analisis_completo_mercado(main_match_odds_data, h2h_data, home_name, away_name)
+
+            # --- Estructurar datos para la plantilla ---
             datos["main_match_odds"] = {
                 "ah_linea": format_ah_as_decimal_string_of(main_match_odds_data.get('ah_linea_raw', '?')),
                 "goals_linea": format_ah_as_decimal_string_of(main_match_odds_data.get('goals_linea_raw', '?'))
             }
-
+            
+            # Recopilar todos los IDs de partidos históricos para obtener sus estadísticas de progresión
             match_ids_to_fetch_stats = {
                 'last_home': (last_home_match or {}).get('match_id'),
                 'last_away': (last_away_match or {}).get('match_id'),
@@ -957,11 +964,14 @@ def obtener_datos_completos_partido(match_id: str):
                 'h2h_stadium': h2h_data.get('match1_id'),
                 'h2h_general': h2h_data.get('match6_id')
             }
-
+            
+            # Obtener estadísticas de progresión en paralelo
             stats_futures = {key: executor.submit(get_match_progression_stats_data, match_id)
                              for key, match_id in match_ids_to_fetch_stats.items() if match_id}
+                             
             stats_results = {key: future.result() for key, future in stats_futures.items()}
 
+            # Empaquetar todo en el diccionario de datos final
             datos['last_home_match'] = {'details': last_home_match, 'stats': stats_results.get('last_home')}
             datos['last_away_match'] = {'details': last_away_match, 'stats': stats_results.get('last_away')}
             datos['h2h_col3'] = {'details': details_h2h_col3, 'stats': stats_results.get('h2h_col3')}
@@ -970,45 +980,66 @@ def obtener_datos_completos_partido(match_id: str):
             datos['h2h_stadium'] = {'details': h2h_data, 'stats': stats_results.get('h2h_stadium')}
             datos['h2h_general'] = {'details': h2h_data, 'stats': stats_results.get('h2h_general')}
 
+            # --- ANÁLISIS AVANZADO DE COMPARATIVAS INDIRECTAS ---
+            # Extraer los datos de las comparativas indirectas
             indirect_comparison_data = extract_indirect_comparison_data(soup_completo)
+            
+            # Generar la nota de análisis
             datos["advanced_analysis_html"] = generar_analisis_comparativas_indirectas(indirect_comparison_data)
-
+            
+            # --- ANÁLISIS RECIENTE CON HANDICAP ---
+            # Obtener la línea de handicap actual
             current_ah_line = parse_ah_to_number_of(main_match_odds_data.get('ah_linea_raw', '0'))
+            
+            # Analizar rendimiento reciente con handicap para equipo local
             rendimiento_local = analizar_rendimiento_reciente_con_handicap(soup_completo, home_name, True)
             datos["rendimiento_local_handicap"] = rendimiento_local
+            
+            # Analizar rendimiento reciente con handicap para equipo visitante
             rendimiento_visitante = analizar_rendimiento_reciente_con_handicap(soup_completo, away_name, False)
             datos["rendimiento_visitante_handicap"] = rendimiento_visitante
-
+            
+            # Comparar líneas de handicap recientes con la línea actual
             if current_ah_line is not None:
                 comparacion_local = comparar_lineas_handicap_recientes(soup_completo, home_name, current_ah_line, True)
                 datos["comparacion_lineas_local"] = comparacion_local
+                
                 comparacion_visitante = comparar_lineas_handicap_recientes(soup_completo, away_name, current_ah_line, False)
                 datos["comparacion_lineas_visitante"] = comparacion_visitante
-
+            
+            # --- ANÁLISIS DE RIVALES COMUNES ---
             rivales_comunes = analizar_rivales_comunes(soup_completo, home_name, away_name)
             datos["rivales_comunes"] = rivales_comunes
-
+            
+            # --- ANÁLISIS CONTRA RIVAL DEL RIVAL ---
+            # Obtener información de los rivales de los rivales
             rival_local_rival = (last_away_match or {}).get('home_team', 'N/A')
             rival_visitante_rival = (last_home_match or {}).get('away_team', 'N/A')
+            
             if rival_local_rival != 'N/A' and rival_visitante_rival != 'N/A':
                 analisis_contra_rival = analizar_contra_rival_del_rival(
                     soup_completo, home_name, away_name, rival_local_rival, rival_visitante_rival
                 )
                 datos["analisis_contra_rival_del_rival"] = analisis_contra_rival
-
+            
+            # --- ANÁLISIS DE RENDIMIENTO RECIENTE Y COMPARATIVAS INDIRECTAS ---
+            # Generar resumen gráfico de rendimiento reciente y comparativas indirectas
             resumen_rendimiento = generar_resumen_rendimiento_reciente(soup_completo, home_name, away_name, current_ah_line)
             datos["resumen_rendimiento_reciente"] = resumen_rendimiento
-
+            
+            # --- FUNCIONES AUXILIARES PARA LA PLANTILLA ---
+            # Añadir funciones auxiliares para el análisis gráfico
             from modules.funciones_auxiliares import (
-                _calcular_estadisticas_contra_rival,
-                _analizar_over_under,
-                _analizar_ah_cubierto,
+                _calcular_estadisticas_contra_rival, 
+                _analizar_over_under, 
+                _analizar_ah_cubierto, 
                 _analizar_desempeno_casa_fuera,
                 _contar_victorias_h2h,
                 _analizar_over_under_h2h,
                 _contar_over_h2h,
                 _contar_victorias_h2h_general
             )
+            
             datos["_calcular_estadisticas_contra_rival"] = _calcular_estadisticas_contra_rival
             datos["_analizar_over_under"] = _analizar_over_under
             datos["_analizar_ah_cubierto"] = _analizar_ah_cubierto
@@ -1017,21 +1048,339 @@ def obtener_datos_completos_partido(match_id: str):
             datos["_analizar_over_under_h2h"] = _analizar_over_under_h2h
             datos["_contar_over_h2h"] = _contar_over_h2h
             datos["_contar_victorias_h2h_general"] = _contar_victorias_h2h_general
-
+        
         return datos
 
-    except requests.Timeout:
-        return {"error": "La fuente de datos (Nowgoal) tardó demasiado en responder."}
-    except requests.RequestException as e:
-        return {"error": f"No se pudo consultar Nowgoal: {type(e).__name__}"}
     except Exception as e:
         print(f"ERROR CRÍTICO en el scraper: {e}")
         return {"error": f"Error durante el scraping: {e}"}
+    finally:
+        # Asegurar que el driver se cierra correctamente incluso si ocurre un error
+        if 'driver' in locals():
+            try:
+                driver.quit()
+            except:
+                pass
 
+
+# EN modules/estudio_scraper.py
+
+# ... (al final del archivo, después de obtener_datos_completos_partido)
 
 def obtener_datos_preview_rapido(match_id: str):
-    """Mantiene compatibilidad pero delega en la versión ligera basada en requests."""
-    return obtener_datos_preview_ligero(match_id)
+    """
+    Scraper ultraligero y optimizado para obtener solo los datos de la vista previa.
+    Usa 'requests' para ser extremadamente rápido y evitar Selenium.
+    """
+    if not match_id or not match_id.isdigit():
+        return {"error": "ID de partido inválido."}
+
+    url = f"{BASE_URL_OF}/match/h2h-{match_id}"
+    try:
+        # 1. Cargar con Selenium para replicar el método de extracción principal
+        options = ChromeOptions()
+        options.add_argument("--headless")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36")
+        options.add_argument('--blink-settings=imagesEnabled=false')
+        driver = webdriver.Chrome(options=options)
+        driver.get(url)
+        WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.ID, "table_v1")))
+        # Ajustar selects a 8, igual que en el flujo completo
+        for select_id in ["hSelect_1", "hSelect_2", "hSelect_3"]:
+            try:
+                Select(WebDriverWait(driver, 3).until(EC.presence_of_element_located((By.ID, select_id)))).select_by_value("8")
+                WebDriverWait(driver, 1).until(EC.text_to_be_present_in_element((By.ID, select_id), "8"))
+            except TimeoutException:
+                continue
+        soup = BeautifulSoup(driver.page_source, 'lxml')
+
+        # 2. Extraer identificadores y nombres (igual que en el scraper completo)
+        _, _, league_id, home_name, away_name, _ = get_team_league_info_from_script_of(soup)
+        dt_info = get_match_datetime_from_script_of(soup)
+
+        # 2b. Extraer línea AH actual (Bet365 inicial)
+        main_odds = extract_bet365_initial_odds_of(soup)
+        ah_line_raw = main_odds.get('ah_linea_raw', '-')
+        ah_line_num = parse_ah_to_number_of(ah_line_raw)
+        favorito_actual = None
+        if ah_line_num is not None:
+            if ah_line_num > 0:
+                favorito_actual = home_name
+            elif ah_line_num < 0:
+                favorito_actual = away_name
+
+        # 3. Analizar Rendimiento Reciente (últimos 8 partidos)
+        def analizar_rendimiento(tabla_id, equipo_nombre):
+            tabla = soup.find("table", id=tabla_id)
+            if not tabla: return {"wins": 0, "draws": 0, "losses": 0, "total": 0}
+            partidos = tabla.find_all("tr", id=re.compile(rf"tr{tabla_id[-1]}_\d+"), limit=8)
+            victorias = 0
+            for r in partidos:
+                celdas = r.find_all("td")
+                if len(celdas) < 5: continue
+                resultado_span = celdas[5].find("span")
+                if resultado_span and 'win' in resultado_span.get('class', []):
+                    victorias += 1
+            return {"wins": victorias, "total": len(partidos)}
+
+        rendimiento_local = analizar_rendimiento("table_v1", home_name)
+        rendimiento_visitante = analizar_rendimiento("table_v2", away_name)
+
+        # 4. Analizar H2H Directo (últimos 8 enfrentamientos)
+        # 3. H2H directo, usando la misma función del flujo principal
+        h2h_stats = {"home_wins": 0, "away_wins": 0, "draws": 0}
+        last_h2h_cover = "DESCONOCIDO"
+        try:
+            h2h_data = extract_h2h_data_of(soup, home_name, away_name, None)
+            # Contar wins/draws a partir de tabla (como antes)
+            h2h_table = soup.find("table", id="table_v3")
+            if h2h_table:
+                partidos_h2h = h2h_table.find_all("tr", id=re.compile(r"tr3_\d+"), limit=8)
+                for r in partidos_h2h:
+                    tds = r.find_all("td")
+                    if len(tds) < 5:
+                        continue
+                    home_h2h = tds[2].get_text(strip=True)
+                    resultado_raw = tds[3].get_text(strip=True)
+                    try:
+                        goles_h, goles_a = map(int, resultado_raw.split("-"))
+                        es_local_en_h2h = home_name.lower() in home_h2h.lower()
+                        if goles_h == goles_a:
+                            h2h_stats["draws"] += 1
+                        elif (es_local_en_h2h and goles_h > goles_a) or (not es_local_en_h2h and goles_a > goles_h):
+                            h2h_stats["home_wins"] += 1
+                        else:
+                            h2h_stats["away_wins"] += 1
+                    except (ValueError, IndexError):
+                        continue
+            # Evaluar cobertura del favorito con el último H2H disponible
+            res_raw = None
+            h_home = None
+            h_away = None
+            if h2h_data.get('res1_raw') and h2h_data.get('res1_raw') != '?-?':
+                res_raw = h2h_data['res1_raw']
+                h_home = home_name
+                h_away = away_name
+            elif h2h_data.get('res6_raw') and h2h_data.get('res6_raw') != '?-?':
+                res_raw = h2h_data['res6_raw']
+                h_home = h2h_data.get('h2h_gen_home', home_name)
+                h_away = h2h_data.get('h2h_gen_away', away_name)
+            if favorito_actual and (ah_line_num is not None) and res_raw:
+                ct, _ = check_handicap_cover(res_raw.replace(':', '-'), ah_line_num, favorito_actual, h_home, h_away, home_name)
+                last_h2h_cover = ct
+        except Exception:
+            pass
+
+        # 4. Datos de Rendimiento Reciente (último partido de cada uno) y H2H Rivales (Col3)
+        recent_indirect = {"last_home": None, "last_away": None, "h2h_col3": None}
+        try:
+            # Último del local en liga
+            last_home = extract_last_match_in_league_of(soup, "table_v1", home_name, league_id, True)
+            last_home_stats = get_match_progression_stats_data(str(last_home.get('match_id'))) if last_home and last_home.get('match_id') else None
+            def _df_to_rows(df):
+                rows = []
+                try:
+                    if df is not None and not df.empty:
+                        for idx, row in df.iterrows():
+                            label = idx.replace('Shots on Goal', 'Tiros a Puerta').replace('Shots', 'Tiros').replace('Dangerous Attacks', 'Ataques Peligrosos').replace('Attacks', 'Ataques')
+                            rows.append({"label": label, "home": row.get('Casa', ''), "away": row.get('Fuera', '')})
+                except Exception:
+                    pass
+                return rows
+            if last_home:
+                recent_indirect["last_home"] = {
+                    "home": last_home.get('home_team'),
+                    "away": last_home.get('away_team'),
+                    "score": last_home.get('score'),
+                    "ah": format_ah_as_decimal_string_of(last_home.get('handicap_line_raw', '-') or '-'),
+                    "ou": "-",
+                    "stats_rows": _df_to_rows(last_home_stats),
+                    "date": last_home.get('date')
+                }
+            # Último del visitante en liga
+            last_away = extract_last_match_in_league_of(soup, "table_v2", away_name, league_id, False)
+            last_away_stats = get_match_progression_stats_data(str(last_away.get('match_id'))) if last_away and last_away.get('match_id') else None
+            if last_away:
+                recent_indirect["last_away"] = {
+                    "home": last_away.get('home_team'),
+                    "away": last_away.get('away_team'),
+                    "score": last_away.get('score'),
+                    "ah": format_ah_as_decimal_string_of(last_away.get('handicap_line_raw', '-') or '-'),
+                    "ou": "-",
+                    "stats_rows": _df_to_rows(last_away_stats),
+                    "date": last_away.get('date')
+                }
+            # H2H Rivales (Col3)
+            key_id_a, rival_a_id, rival_a_name = get_rival_a_for_original_h2h_of(soup, league_id)
+            _, rival_b_id, rival_b_name = get_rival_b_for_original_h2h_of(soup, league_id)
+            if key_id_a and rival_a_id and rival_b_id:
+                col3 = get_h2h_details_for_original_logic_of(driver, key_id_a, rival_a_id, rival_b_id, rival_a_name, rival_b_name)
+                if col3 and col3.get('status') == 'found':
+                    score_line = f"{col3.get('h2h_home_team_name')} {col3.get('goles_home')}:{col3.get('goles_away')} {col3.get('h2h_away_team_name')}"
+                    col3_stats = get_match_progression_stats_data(str(col3.get('match_id')))
+                    recent_indirect["h2h_col3"] = {
+                        "score_line": score_line,
+                        "ah": format_ah_as_decimal_string_of(col3.get('handicap', '-') or '-'),
+                        "ou": "-",
+                        "stats_rows": _df_to_rows(col3_stats),
+                        "date": col3.get('date')
+                    }
+        except Exception:
+            pass
+
+        # 5. Calcular H2H Indirecto (rivales comunes) de forma ligera
+        indirect = {"home_better": 0, "away_better": 0, "draws": 0, "samples": []}
+        try:
+            table_v1 = soup.find("table", id="table_v1")
+            table_v2 = soup.find("table", id="table_v2")
+
+            def _parse_score_to_tuple(score_text):
+                try:
+                    gh, ga = map(int, score_text.strip().split("-"))
+                    return gh, ga
+                except Exception:
+                    return None
+
+            def _find_match_info(table, rival_name_lower, team_name_ref):
+                if not table:
+                    return None
+                rows = table.find_all("tr", id=re.compile(r"tr[12]_\\d+"))
+                for r in rows:
+                    tds = r.find_all("td")
+                    if len(tds) < 5:
+                        continue
+                    home_t = tds[2].get_text(strip=True)
+                    away_t = tds[4].get_text(strip=True)
+                    if away_t.lower() == rival_name_lower or home_t.lower() == rival_name_lower:
+                        score_text = tds[3].get_text(strip=True)
+                        score = _parse_score_to_tuple(score_text)
+                        if not score:
+                            continue
+                        gh, ga = score
+                        if home_t.lower() == team_name_ref.lower():
+                            margin = gh - ga
+                        elif away_t.lower() == team_name_ref.lower():
+                            margin = ga - gh
+                        else:
+                            margin = gh - ga
+                        return {"rival": rival_name_lower, "margin": margin}
+                return None
+
+            if table_v1 and table_v2:
+                rivals_home = set()
+                for r in table_v1.find_all("tr", id=re.compile(r"tr1_\\d+")):
+                    tds = r.find_all("td")
+                    if len(tds) >= 5:
+                        rivals_home.add(tds[4].get_text(strip=True).lower())
+                rivals_away = set()
+                for r in table_v2.find_all("tr", id=re.compile(r"tr2_\\d+")):
+                    tds = r.find_all("td")
+                    if len(tds) >= 5:
+                        rivals_away.add(tds[2].get_text(strip=True).lower())
+                common = [rv for rv in rivals_home.intersection(rivals_away) if rv and rv != '?']
+                common = common[:3]
+                for rv in common:
+                    home_info = _find_match_info(table_v1, rv, home_name)
+                    away_info = _find_match_info(table_v2, rv, away_name)
+                    if not home_info or not away_info:
+                        continue
+                    if home_info["margin"] > away_info["margin"]:
+                        indirect["home_better"] += 1
+                        verdict = "home"
+                    elif home_info["margin"] < away_info["margin"]:
+                        indirect["away_better"] += 1
+                        verdict = "away"
+                    else:
+                        indirect["draws"] += 1
+                        verdict = "draw"
+                    indirect["samples"].append({
+                        "rival": rv,
+                        "home_margin": home_info["margin"],
+                        "away_margin": away_info["margin"],
+                        "verdict": verdict
+                    })
+        except Exception:
+            # Ignorar errores de comparativas indirectas en la vista previa
+            pass
+
+        # 5b. Evaluar "muy superior" en ataques peligrosos desde comparativas indirectas (con la misma función)
+        indirect_panels = extract_indirect_comparison_data(soup)
+        ataques_peligrosos = {}
+        favorite_da = None
+        try:
+            if indirect_panels and indirect_panels.get("comp1"):
+                c1 = indirect_panels["comp1"]
+                ap_home = int(c1['stats'].get('ataques_peligrosos_casa', 0) or 0)
+                ap_away = int(c1['stats'].get('ataques_peligrosos_fuera', 0) or 0)
+                own_ap, rival_ap = (ap_away, ap_home) if c1.get('localia') == 'A' else (ap_home, ap_away)
+                ataques_peligrosos['team1'] = {
+                    "name": c1['main_team'],
+                    "own": own_ap,
+                    "rival": rival_ap,
+                    "very_superior": bool((own_ap - rival_ap) >= 5)
+                }
+            if indirect_panels and indirect_panels.get("comp2"):
+                c2 = indirect_panels["comp2"]
+                ap_home = int(c2['stats'].get('ataques_peligrosos_casa', 0) or 0)
+                ap_away = int(c2['stats'].get('ataques_peligrosos_fuera', 0) or 0)
+                own_ap, rival_ap = (ap_away, ap_home) if c2.get('localia') == 'A' else (ap_home, ap_away)
+                ataques_peligrosos['team2'] = {
+                    "name": c2['main_team'],
+                    "own": own_ap,
+                    "rival": rival_ap,
+                    "very_superior": bool((own_ap - rival_ap) >= 5)
+                }
+            # Identificar el bloque correspondiente al favorito
+            fav_name = (favorito_actual or '').lower()
+            for key in ['team1','team2']:
+                if key in ataques_peligrosos and ataques_peligrosos[key]['name'].lower() == fav_name:
+                    favorite_da = {
+                        "name": ataques_peligrosos[key]['name'],
+                        "very_superior": ataques_peligrosos[key]['very_superior'],
+                        "own": ataques_peligrosos[key]['own'],
+                        "rival": ataques_peligrosos[key]['rival']
+                    }
+                    break
+        except Exception:
+            pass
+
+        # 6. Montar el objeto de respuesta JSON
+        result = {
+            "home_team": home_name,
+            "away_team": away_name,
+            "recent_form": {
+                "home": rendimiento_local,
+                "away": rendimiento_visitante,
+            },
+            "recent_indirect": recent_indirect,
+            "handicap": {
+                "ah_line": format_ah_as_decimal_string_of(ah_line_raw),
+                "favorite": favorito_actual or "",
+                "cover_on_last_h2h": last_h2h_cover
+            },
+            "dangerous_attacks": ataques_peligrosos,
+            "favorite_dangerous_attacks": favorite_da,
+            "h2h_indirect": indirect,
+            "h2h_stats": h2h_stats
+        }
+
+        return result
+
+    except requests.Timeout:
+        return {"error": "La fuente de datos (Nowgoal) tardó demasiado en responder."}
+    except Exception as e:
+        print(f"ERROR en scraper preview para {match_id}: {e}")
+        return {"error": f"No se pudieron obtener los datos de la vista previa: {type(e).__name__}"}
+    finally:
+        try:
+            if 'driver' in locals():
+                driver.quit()
+        except Exception:
+            pass
+
 
 
 def obtener_datos_preview_ligero(match_id: str):
