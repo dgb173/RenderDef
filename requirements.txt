@@ -81,7 +81,6 @@ pyinstaller-hooks-contrib==2025.5
 pyngrok==7.3.0
 pyparsing==3.2.3
 pyphen==0.17.2
-pyppeteer==2.0.0
 pyquery==2.0.1
 PySocks==1.7.1
 python-dateutil==2.9.0.post0

@@ -1,99 +1,71 @@
-Haz todo esto en el directorio de copia de seguridad:
+Por supuesto. Entiendo perfectamente. No se trata solo de darte los comandos, sino de que entiendas con total claridad qué ha ocurrido, por qué ha fallado el despliegue y por qué la solución que vamos a aplicar es la correcta.
 
-Deberas eliminar el apartado **H2H general** de la función del botón del ojo (`<i class="fa-solid fa-eye"></i>`), sigue estos pasos claros:
+Aquí tienes la explicación detallada:
 
----
+¿Qué ha Sucedido Exactamente? El Diagnóstico
 
-### **1. Identifica la función JavaScript del botón**
-El botón con clase `preview-btn` tiene un evento asociado (probablemente un `click`) que muestra la vista previa. Debes encontrar esa función en tu código JavaScript.  
-**Ejemplo de cómo podría verse:**
-```javascript
-document.querySelectorAll('.preview-btn').forEach(btn => {
-    btn.addEventListener('click', function() {
-        // Código que muestra la ventana emergente con datos del partido
-    });
-});
-```
+Imagina que estás construyendo un motor y tienes a dos mecánicos expertos trabajando en él.
 
----
+El primer mecánico se llama Playwright.
 
-### **2. Localiza dónde se carga el contenido del H2H**
-Dentro de la función del botón, busca cómo se obtienen o renderizan los datos del H2H. Puede ser:
-- Una llamada a una API que incluye el H2H.
-- Un elemento HTML oculto que se clona y muestra.
-- Datos hardcodeados en el JavaScript.
+El segundo mecánico se llama Pyppeteer.
 
-**Ejemplo hipotético de llamada a API:**
-```javascript
-fetch(`/api/match/${this.dataset.matchId}`)
-    .then(response => response.json())
-    .then(data => {
-        // Aquí 'data.h2h' contiene los datos del H2H
-        // Elimina esta parte para quitarlo
-    });
-```
+Ambos son muy buenos, pero tienen una manía: para apretar una tuerca específica, ambos necesitan usar una llave inglesa llamada Pyee.
 
----
+El problema es que Playwright exige usar una llave Pyee del tamaño 13. No trabajará con ninguna otra.
+Al mismo tiempo, Pyppeteer exige usar una llave Pyee del tamaño 11. Se niega a usar cualquier otra.
 
-### **3. Modifica el código para excluir el H2H**
-**Opción A: Si el H2H se obtiene de una API:**
-- **Elimina el campo `h2h`** de la respuesta de la API antes de mostrarlo.  
-  **Ejemplo:**
-  ```javascript
-  fetch(`/api/match/${this.dataset.matchId}`)
-      .then(response => response.json())
-      .then(data => {
-          // Eliminar el H2H del objeto de datos
-          delete data.h2h;
-          // Renderizar el resto de datos...
-      });
-  ```
+Cuando el jefe de taller (el sistema de despliegue de Render) abre la caja de herramientas (requirements.txt), se encuentra con una orden imposible: "Dale al equipo una llave Pyee del tamaño 13 y, al mismo tiempo, una del tamaño 11".
 
-**Opción B: Si el H2H está en HTML:**
-- **Quita el elemento HTML correspondiente** del template que se muestra en la vista previa.  
-  **Ejemplo:**
-  ```html
-  <!-- Elimina este div si está presente -->
-  <div class="h2h-section">
-      <h3>H2H Riales (Col3)</h3>
-      <p>2 - 2</p>
-      <!-- Otros datos de H2H -->
-  </div>
-  ```
+El jefe de taller no puede poner dos llaves del mismo nombre pero de diferente tamaño en el motor a la vez. Es una contradicción lógica. Por eso, detiene todo el trabajo en seco y te notifica el error: ERROR: ResolutionImpossible. Te está diciendo, literalmente, "Es imposible resolver esta petición contradictoria".
 
----
+La Causa Raíz del Problema
 
-### **4. Verifica en la interfaz**
-Después de modificar el código:
-1. Haz clic en el botón del ojo (`<i class="fa-solid fa-eye"></i>`) en la página.
-2. Confirma que la ventana de vista previa **no muestra el apartado H2H**.
+Este conflicto no es un error de programación, sino un error de configuración en nuestro listado de "ingredientes" (requirements.txt). Durante el desarrollo, es posible que hayamos probado tanto Playwright como Pyppeteer para tareas de scraping. Sin embargo, para la versión final de la aplicación, solo uno de ellos es realmente necesario. El otro se ha quedado en la lista por error, como un ingrediente de una receta antigua que ya no usamos.
 
----
+Tener ambos en la lista es redundante e, como acabamos de ver, problemático.
 
-### **5. Ejemplo final del HTML modificado**
-Si el H2H estaba en HTML, tu tabla quedaría así:
-```html
-<td class="align-middle">
-    <span class="preview-btn" data-match-id="2826192" title="Ver vista previa rápida">
-        <i class="fa-solid fa-eye"></i>
-    </span>
-</td>
+La Solución Lógica: Despedir al Mecánico que no Necesitamos
 
-<!-- Resto de la fila sin el apartado H2H -->
-<div class="match-preview">
-    <!-- Datos del partido, pero SIN H2H -->
-    <div class="team-stats">
-        <!-- Estadísticas de los equipos -->
-    </div>
-    <div class="market-analysis">
-        <!-- Análisis de mercado -->
-    </div>
-</div>
-```
+La solución es simple: debemos revisar el motor (nuestro código) y ver cuál de los dos mecánicos está haciendo el trabajo real. El otro, el que está de sobra, debe ser retirado de la lista de personal.
 
----
+En nuestro caso, Playwright es la herramienta más moderna y la que probablemente esté realizando todo el trabajo importante. Pyppeteer es el mecánico redundante.
 
-### **Consejo adicional:**
-Si usas un framework como React, Vue o Angular, asegúrate de que el componente de vista previa **no renderiza el H2H** al hacer `return ()`.
+Por lo tanto, el plan es el siguiente:
 
-¡Listo! Con estos pasos, el botón del ojo mostrará la vista previa sin el apartado H2H. 🛠️👁️
+Editamos la lista de herramientas (requirements.txt): Vamos a borrar la línea que pide la presencia de Pyppeteer. Al hacerlo, eliminamos la petición de la "llave tamaño 11".
+
+El conflicto desaparece: Ahora, cuando el jefe de taller lea la lista, solo verá una petición: "Se necesita Playwright y su llave Pyee de tamaño 13". Esta orden es clara, lógica y no tiene contradicciones.
+
+Enviamos la lista corregida: Subimos el archivo requirements.txt modificado a GitHub.
+
+Acción Inmediata (Los Comandos a Ejecutar)
+
+Ahora que entiendes el porqué, ejecuta estos pasos en tu terminal. Son la implementación práctica de la solución que acabamos de describir.
+
+1. Modifica el archivo de requisitos:
+
+Abre el fichero requirements.txt.
+
+Busca la línea que contiene pyppeteer (ej: pyppeteer==2.0.0) y bórrala.
+
+Guarda y cierra el archivo.
+
+2. Sube la corrección a GitHub:
+
+code
+Bash
+download
+content_copy
+expand_less
+
+# Paso 1: Informa a Git que has modificado el archivo de requisitos.
+git add requirements.txt
+
+# Paso 2: Crea un registro claro de lo que has hecho. Es una buena práctica.
+git commit -m "Fix: Resuelve conflicto de dependencias eliminando pyppeteer"
+
+# Paso 3: Envía la versión corregida del archivo a tu repositorio en GitHub.
+git push
+
+Una vez que ejecutes git push, Render detectará el cambio y comenzará un nuevo despliegue automáticamente. Esta vez, al leer la lista de requisitos, no encontrará ningún conflicto y el proceso de construcción debería finalizar con éxito.
